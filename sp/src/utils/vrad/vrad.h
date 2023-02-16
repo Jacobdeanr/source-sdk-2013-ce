@@ -67,10 +67,10 @@ struct directlight_t
 {
 	int		index;
 
-	directlight_t *next;
+	directlight_t* next;
 	dworldlight_t light;
 
-	byte	*pvs;		// accumulated domain of the light
+	byte* pvs;		// accumulated domain of the light
 	int		facenum;	// domain of attached lights
 	int		texdata;	// texture source of traced lights
 
@@ -80,6 +80,11 @@ struct directlight_t
 	float	tscale;
 	float	soffset;
 	float	toffset;
+
+	// Flag indicating that even though light.type is emit_skylight, treat this light as a
+	// directional light source in vrad
+	bool	m_bSkyLightIsDirectionalLight;
+	float	m_flSkyLightSunAngularExtent;
 
 	int		dorecalc; // position, vector, spot angle, etc.
 	IncrementalLightID	m_IncrementalID;
@@ -93,12 +98,15 @@ struct directlight_t
 
 	directlight_t(void)
 	{
+		m_bSkyLightIsDirectionalLight = false;
+		m_flSkyLightSunAngularExtent = 0.0f;
 		m_flEndFadeDistance = -1.0;							// end<start indicates not set
-		m_flStartFadeDistance= 0.0;
+		m_flStartFadeDistance = 0.0;
 		m_flCapDist = 1.0e22;
 
 	}
 };
+
 
 struct bumplights_t
 {
@@ -382,9 +390,12 @@ inline byte PVSCheck( const byte *pvs, int iCluster )
 // outputs 1 in fractionVisible if no occlusion, 0 if full occlusion, and in-between values
 void TestLine( FourVectors const& start, FourVectors const& stop, fltx4 *pFractionVisible, int static_prop_index_to_ignore=-1);
 
+void TestLine_IgnoreSky(FourVectors const& start, FourVectors const& stop, fltx4* pFractionVisible, int static_prop_index_to_ignore = -1);
+
 // returns 1 if the ray sees the sky, 0 if it doesn't, and in-between values for partial coverage
 void TestLine_DoesHitSky( FourVectors const& start, FourVectors const& stop,
                           fltx4 *pFractionVisible, bool canRecurse = true, int static_prop_to_skip=-1, bool bDoDebug = false );
+
 
 // converts any marked brush entities to triangles for shadow casting
 void ExtractBrushEntityShadowCasters ( void );
