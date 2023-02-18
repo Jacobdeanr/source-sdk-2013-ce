@@ -1942,30 +1942,22 @@ void GatherSampleAmbientSkySSE(SSE_sampleLightOutput_t& out, directlight_t* dl, 
 	// NEW NEW NEW
 	//By Default we're loading in the ambient from the light_environment.
 	//We'll want to modify this later but I'm testing things right now.
-	Vector ambient_color = dl->light.intensity; // Not used, but this would be the ambient light color from the light_environment
-	// We'll need to convert these into FourVectors, where xyz (rgb) is represented in each direction for the color...
-	// FourVector stores data as: x x x x, y y y y, z z z z 
-	// So Red would be (255,255,255,255, 0,0,0,0, 0,0,0,0)
-	// Blue would be (0,0,0,0 0,0,0,0, 255,255,255,255)
-	// Then we'll trace the angle the ray is shot off, compare it to how visible it is to the sky and multiply it by the visible amount.
+	Vector env_ambient_color = dl->light.intensity; // Not used, but this currently. would be the ambient light color from the light_environment
+	
+													
 
-	Vector bottomColor(174, 97, 19);
-	Vector topColor(105, 142, 165);
-	float gradientHeight = 3; // the height of the gradient
+	// We'll trace the angle the ray is shot off, compare it to how visible it is to the sky and multiply it by the visible amount. 
+	Vector topColor(190, 201, 220);
+	Vector bottomColor(0, 0, 0); //aka ground color
+	float gradientHeight = 2; // the height of the gradient
 
-	fltx4 r = Four_Ones;
-	fltx4 g = Four_Ones;
-
-	FourVectors topColorFour;
-	FourVectors bottomColorFour;
-	topColorFour.DuplicateVector(topColor);
-	topColorFour.DuplicateVector(bottomColor);
-
+	topColor = topColor * 1;
+	bottomColor = bottomColor * 1;
 
 	Vector lightColor;
 	Vector colorAccumulator(0, 0, 0);
+	Vector averageColor(0, 0, 0);
 	int sampleCount = 0;
-
 
 	for (int i = 0; i < normalCount; i++)
 	{
@@ -2017,7 +2009,6 @@ void GatherSampleAmbientSkySSE(SSE_sampleLightOutput_t& out, directlight_t* dl, 
 
 			//possibleHitCount is used later for calculating the m_flDot.
 			possibleHitCount[i] = AddSIMD(AndSIMD(AndSIMD(validity, validity2), Four_Ones), possibleHitCount[i]);
-
 		}
 
 		// search back to see if we can hit a sky brush
@@ -2032,45 +2023,76 @@ void GatherSampleAmbientSkySSE(SSE_sampleLightOutput_t& out, directlight_t* dl, 
 		fltx4 fractionVisible = Four_Ones;
 		TestLine_DoesHitSky(surfacePos, delta, &fractionVisible, true, static_prop_index_to_ignore);
 
-		//This code only works if the face has a normal map?
-		//FourVectors normals = pNormals[i];
-		//fltx4 testx = normals.x;	
-		//fltx4 testy = normals.y;
-		//fltx4 testz = normals.x;
-		
-		//Convert a fltx4 to a string and print it in the compiler.
-		//char* str = Fltx4ToString(testx);
-		//char* str2 = Fltx4ToString(testy);
-		//char* str3 = Fltx4ToString(testz);
-		//qprintf("\n test output. X = %s", str);
-		//delete[] str;
-		//delete[] str2;
-		//delete[] str3;
-
 		//Debug
-		//char* dotstring = Fltx4ToString(Four_Zeros);
-		//qprintf("\n NOTICE ME PLEASE DOTS output  = %s", dotstring);
+		//char* dotstring = Fltx4ToString(fractionVisible);
+		//qprintf("\n fractionVisible output  = %s", dotstring);
 		//delete[] dotstring;
+
+		Vector biasNorm[4];
+		for (int k = 0; k < normalCount; k++) 
+		{
+			fltx4 normx = pNormals[k].x;
+			fltx4 normy = pNormals[k].y;
+			fltx4 normz = pNormals[k].z;
+
+			//fltx4 skyvisx = MulSIMD(NegSIMD(normx), fractionVisible);
+			//fltx4 skyvisy = MulSIMD(NegSIMD(normy), fractionVisible);
+			//fltx4 skyvisz = MulSIMD(NegSIMD(normz), fractionVisible);
+
+			fltx4 skyvisx = MulSIMD(normx, fractionVisible);
+			fltx4 skyvisy = MulSIMD(normy, fractionVisible);
+			fltx4 skyvisz = MulSIMD(NegSIMD(normz), fractionVisible); // Not sure why Up is negative.
+
+			////fltx4 testx = NegSIMD(pNormals[k].x);
+			//char* str = Fltx4ToString(skyvisx);
+			//
+			////fltx4 testy = NegSIMD(pNormals[k].y);
+			//char* str2 = Fltx4ToString(skyvisy);
+			//
+			////fltx4 testz = NegSIMD(pNormals[k].z);
+			//char* str3 = Fltx4ToString(skyvisz);
+			//
+			////Convert a fltx4 to a string and print it in the compiler.
+			//char* str4 = Fltx4ToString(fractionVisible);
+			//qprintf("\n Skyvis X = %s \n", str);
+			//delete[] str;
+			//qprintf("\n Skyvis Y Multiply = %s \n", str2);
+			//delete[] str2;
+			//qprintf("\n Skyvis Z = %s \n", str3);
+			//delete[] str3;
+			//qprintf("\n fractionVisible = %s \n", str4);
+			//delete[] str4;
+
+			//We now have the directions that we can sample for each normal.
+			for (int i = 0; i < 4; i++) {
+				biasNorm[i] = Vector(SubFloat(skyvisx, i), SubFloat(skyvisy, i), SubFloat(skyvisz, i));
+			}
+
+		}
 		
 		//Currently this code samples random points in a sphere regardless of the normal direction of the face.
 		//This causes uniform lighting to appear on all sides.
 		//This needs to be updated to perform 
-		float u = static_cast<float>(j) / nsky_samples;
-		float v = static_cast<float>(j + 1) / nsky_samples;
-		float theta = u * M_PI;
-		float phi = v * M_PI * 2;
-		Vector direction(sin(theta) * cos(phi), sin(theta) * sin(phi), cos(theta));
+		// Sample a direction from the hemisphere
+		//float u = static_cast<float>(j) / nsky_samples;
+		//float v = static_cast<float>(j + 1) / nsky_samples;
+		//float theta = u * M_PI;
+		//float phi = v * M_PI * 2;
+		//
+		//Vector direction(sin(theta) * cos(phi), sin(theta) * sin(phi), cos(theta));
+		//// Flip the direction if it is pointing downwards
+		//if (DotProduct(direction, Vector(0, 0, 1)) < 0) {
+		//	direction = -direction;
+		//}
 
-		// Flip the direction if it is pointing downwards
-		if (DotProduct(direction, Vector(0, 0, 1)) < 0) {
-			direction = -direction;
-		}
+		int dirsamples = 0;
+		for (int i = 1; i < 4; i++) {
+			// Use the bias direction for this surface normal instead of the random direction
+			Vector direction = biasNorm[i];
 
-		// Loop over all surface normals and compute the dot product
-		for (int i = 0; i < normalCount; i++)
-		{
-			Vector norms = pNormals[i].Vec(2);
-			float dot = fabsf(DotProduct(direction , norms));
+			// Compute the dot product with the surface normal
+			Vector norms = pNormals[0].Vec(0);
+			float dot = fabsf(DotProduct(direction, norms));
 
 			// Raise the dot product to a power to flatten the curve
 			float adjustedDot = powf(dot, 0.5f);
@@ -2080,30 +2102,78 @@ void GatherSampleAmbientSkySSE(SSE_sampleLightOutput_t& out, directlight_t* dl, 
 
 			// Accumulate the color value
 			colorAccumulator += lightColor;
-			sampleCount++;
+			dirsamples++;
 		}
+	
+		// Compute the average color of the accumulated rays from our hemisphere sampling.
+		averageColor = colorAccumulator / static_cast<float>(dirsamples);
+		sampleCount++;
+		//for (int k = 0; k < normalCount; k++) {
+			//This code only works if the face has a normal map?
+			//fltx4 testx = NegSIMD(pNormals[k].x);
+			//char* str = Fltx4ToString(testx);
+			//
+			//fltx4 testy = NegSIMD(pNormals[k].y);
+			//char* str2 = Fltx4ToString(testy);
+			//
+			//fltx4 testz = NegSIMD(pNormals[k].z);
+			//char* str3 = Fltx4ToString(testz);
+			//
+			////Convert a fltx4 to a string and print it in the compiler.
+			//qprintf("\n Normal X = %s \n", str);
+			//delete[] str;
+			//qprintf("\n Normal Y = %s \n", str2);
+			//delete[] str2;
+			//qprintf("\n Normal Z = %s \n", str3);
+			//delete[] str3;
 
+		//It appears that normalCount contains the number of surface normals that are available. For Example,
+		//A face that has no bumpmap will contain only a single normal. Presumably the surface normal. This is stored at pNormal[0]
+		//A face that has a bumpmap will contain 4 normals, whos direction is stored in pNormal[1-3] for each direction.
+		// NegSIMD to receive the negated Example outputs: 
+		// 
+		// pNormal[0]
+		//Normal X = (1.000000, 1.000000, 1.000000, 1.000000) type:fltx4
+		//Normal Y = (0.000000, 0.000000, 0.000000, 0.000000) type:fltx4
+		//Normal Z = (0.000000, 0.000000, 0.000000, 0.000000) type:fltx4
+		// pNormal[1]
+		//Normal X = (0.577350, 0.577350, 0.577350, 0.577350) type:fltx4
+		//Normal Y = (-0.816497, -0.816497, -0.816497, -0.816497) type:fltx4
+		//Normal Z = (0.000000, 0.000000, 0.000000, 0.000000) type:fltx4
+		// pNormal[2]
+		//Normal X = (0.577350, 0.577350, 0.577350, 0.577350) type:fltx4
+		//Normal Y = (0.408248, 0.408248, 0.408248, 0.408248) type:fltx4
+		//Normal Z = (0.707107, 0.707107, 0.707107, 0.707107) type:fltx4
+		// pNormal[3]
+		//Normal X = (0.577350, 0.577350, 0.577350, 0.577350) type:fltx4
+		//Normal Y = (0.408248, 0.408248, 0.408248, 0.408248) type:fltx4
+		//Normal Z = (-0.707107, -0.707107, -0.707107, -0.707107) type:fltx4
+
+		//Each fltx4 vector contains the same value, so we can reduce this down to an angle for the dome sampler :)
+		//}
 
 		// This loop does nothing with the color of the ambient light passed from the dlight. 
 		// Specificially this is only intensity in the direction of the ray.
 		// So that means the light color is done elsewhere.
+
 		for (int i = 0; i < normalCount; i++)
 		{
 			fltx4 addedAmount = MulSIMD(fractionVisible, dots[i]);
 			ambient_intensity[i] = AddSIMD(ambient_intensity[i], addedAmount);
 		}
-	}
 
-	// Compute the average color of the accumulated rays from our hemisphere sampling.
-	Vector averageColor = colorAccumulator / static_cast<float>(sampleCount);
+	}
+	Vector finalaverageColor = averageColor / static_cast<float>(sampleCount);
 
 	// Set the intensity of the light based on the average color received.
-	dl->light.intensity = averageColor;
+	dl->light.intensity = finalaverageColor;
 
-	//DEBUG for checking the accumulated light.intensity value. Only run this with fast and an extremly simple map, because it can lag the compile window.
+	//DEBUG for checking the accumulated light.intensity value. Only run this with fast and an extremly simple map, because it can lag the compile window + crash.
 	//char str[64];
 	//Q_snprintf(str, sizeof(str), "(%f, %f, %f)", dl->light.intensity[0], dl->light.intensity[1], dl->light.intensity[2]);
 	//qprintf("%s\n", str);
+
+
 
 	//I'm still not 100% sure what this does.
 	out.m_flFalloff = Four_Ones;
