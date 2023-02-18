@@ -1654,6 +1654,33 @@ static void ParseLightPoint( entity_t* e, directlight_t* dl )
 	SetLightFalloffParams(e,dl);
 }
 
+static void ParseLightHemisphere(entity_t* e, directlight_t* dl)
+{
+	Vector dest;
+	GetVectorForKey(e, "origin", dest);
+	dl = AllocDLight(dest, true);
+
+	ParseLightGeneric(e, dl);
+
+	char* angle_str = ValueForKeyWithDefault(e, "SunSpreadAngle");
+	if (angle_str)
+	{
+		dl->m_flSkyLightSunAngularExtent = atof(angle_str);
+		dl->m_flSkyLightSunAngularExtent = sin((M_PI / 180.0) * dl->m_flSkyLightSunAngularExtent);
+	}
+
+	dl->light.type = emit_skylight;
+	// For the engine, emit_skylight is the type we want.
+	// Set an additional flag identifying this as "not the global skylight" for vrad. This will cause it to use the angular extent associated with this light
+	// instead of the global one.
+	dl->m_bSkyLightIsDirectionalLight = true;
+
+	// directional lights never cast entity shadows
+	//dl->light.flags &= ~DWL_FLAGS_CASTENTITYSHADOWS;
+
+	BuildVisForLightEnvironment(3, &dl);
+}
+
 /*
   =============
   CreateDirectLights
@@ -1721,13 +1748,17 @@ void CreateDirectLights (void)
 		{
 			ParseLightSpot( e, dl );
 		}
+		else if (!strcmp(name, "light_directional"))
+		{
+			ParseLightDirectional(e, dl);
+		}
 		else if (!strcmp(name, "light_environment")) 
 		{
 			ParseLightEnvironment( e, dl );
 		}
-		else if (!strcmp(name, "light_directional"))
+		else if (!strcmp(name, "light_hemisphere"))
 		{
-			ParseLightDirectional(e, dl);
+			ParseLightHemisphere(e, dl);
 		}
 		else if (!strcmp(name, "light")) 
 		{
@@ -1878,6 +1909,21 @@ void GatherSampleSkyLightSSE(SSE_sampleLightOutput_t& out, directlight_t* dl, in
 	out.m_flSunAmount = MulSIMD(out.m_flDot[0], out.m_flFalloff);
 }
 
+
+char* Fltx4ToString(fltx4 v) {
+	char* str = new char[64];
+	sprintf(str, "(%f, %f, %f, %f)", SubFloat(v, 0), SubFloat(v, 1), SubFloat(v, 2), SubFloat(v, 3));
+	return str;
+	//Convert a fltx4 to a string and print it in the compiler.
+//char* str = Fltx4ToString(v);
+//printf("%s\n", str);
+//delete[] str;
+//return 0;
+}
+
+
+
+//TODO: Modify?
 // Helper function - gathers light from ambient sky light
 void GatherSampleAmbientSkySSE(SSE_sampleLightOutput_t& out, directlight_t* dl, int facenum,
 	FourVectors const& pos, FourVectors* pNormals, int normalCount, int iThread,
@@ -1893,6 +1939,34 @@ void GatherSampleAmbientSkySSE(SSE_sampleLightOutput_t& out, directlight_t* dl, 
 	fltx4 possibleHitCount[NUM_BUMP_VECTS + 1];
 	fltx4 dots[NUM_BUMP_VECTS + 1];
 
+	// NEW NEW NEW
+	//By Default we're loading in the ambient from the light_environment.
+	//We'll want to modify this later but I'm testing things right now.
+	Vector ambient_color = dl->light.intensity; // Not used, but this would be the ambient light color from the light_environment
+	// We'll need to convert these into FourVectors, where xyz (rgb) is represented in each direction for the color...
+	// FourVector stores data as: x x x x, y y y y, z z z z 
+	// So Red would be (255,255,255,255, 0,0,0,0, 0,0,0,0)
+	// Blue would be (0,0,0,0 0,0,0,0, 255,255,255,255)
+	// Then we'll trace the angle the ray is shot off, compare it to how visible it is to the sky and multiply it by the visible amount.
+
+	Vector bottomColor(174, 97, 19);
+	Vector topColor(105, 142, 165);
+	float gradientHeight = 3; // the height of the gradient
+
+	fltx4 r = Four_Ones;
+	fltx4 g = Four_Ones;
+
+	FourVectors topColorFour;
+	FourVectors bottomColorFour;
+	topColorFour.DuplicateVector(topColor);
+	topColorFour.DuplicateVector(bottomColor);
+
+
+	Vector lightColor;
+	Vector colorAccumulator(0, 0, 0);
+	int sampleCount = 0;
+
+
 	for (int i = 0; i < normalCount; i++)
 	{
 		ambient_intensity[i] = Four_Zeros;
@@ -1906,6 +1980,7 @@ void GatherSampleAmbientSkySSE(SSE_sampleLightOutput_t& out, directlight_t* dl, 
 	else
 		nsky_samples *= g_flSkySampleScale;
 
+	//For every sky sample perform this loop.
 	for (int j = 0; j < nsky_samples; j++)
 	{
 		FourVectors anorm;
@@ -1930,7 +2005,7 @@ void GatherSampleAmbientSkySSE(SSE_sampleLightOutput_t& out, directlight_t* dl, 
 
 		for (int i = 1; i < normalCount; i++)
 		{
-			if (bIgnoreNormals)
+			if (bIgnoreNormals) 
 				dots[i] = ReplicateX4(CONSTANT_DOT);
 			else
 				dots[i] = NegSIMD(pNormals[i] * anorm);
@@ -1939,7 +2014,10 @@ void GatherSampleAmbientSkySSE(SSE_sampleLightOutput_t& out, directlight_t* dl, 
 
 			fltx4 validity2 = CmpGtSIMD(dots[i], ReplicateX4(EQUAL_EPSILON));
 			dots[i] = AndSIMD(validity2, dots[i]);
+
+			//possibleHitCount is used later for calculating the m_flDot.
 			possibleHitCount[i] = AddSIMD(AndSIMD(AndSIMD(validity, validity2), Four_Ones), possibleHitCount[i]);
+
 		}
 
 		// search back to see if we can hit a sky brush
@@ -1953,27 +2031,94 @@ void GatherSampleAmbientSkySSE(SSE_sampleLightOutput_t& out, directlight_t* dl, 
 
 		fltx4 fractionVisible = Four_Ones;
 		TestLine_DoesHitSky(surfacePos, delta, &fractionVisible, true, static_prop_index_to_ignore);
+
+		//This code only works if the face has a normal map?
+		//FourVectors normals = pNormals[i];
+		//fltx4 testx = normals.x;	
+		//fltx4 testy = normals.y;
+		//fltx4 testz = normals.x;
+		
+		//Convert a fltx4 to a string and print it in the compiler.
+		//char* str = Fltx4ToString(testx);
+		//char* str2 = Fltx4ToString(testy);
+		//char* str3 = Fltx4ToString(testz);
+		//qprintf("\n test output. X = %s", str);
+		//delete[] str;
+		//delete[] str2;
+		//delete[] str3;
+
+		//Debug
+		//char* dotstring = Fltx4ToString(Four_Zeros);
+		//qprintf("\n NOTICE ME PLEASE DOTS output  = %s", dotstring);
+		//delete[] dotstring;
+		
+		//Currently this code samples random points in a sphere regardless of the normal direction of the face.
+		//This causes uniform lighting to appear on all sides.
+		//This needs to be updated to perform 
+		float u = static_cast<float>(j) / nsky_samples;
+		float v = static_cast<float>(j + 1) / nsky_samples;
+		float theta = u * M_PI;
+		float phi = v * M_PI * 2;
+		Vector direction(sin(theta) * cos(phi), sin(theta) * sin(phi), cos(theta));
+
+		// Flip the direction if it is pointing downwards
+		if (DotProduct(direction, Vector(0, 0, 1)) < 0) {
+			direction = -direction;
+		}
+
+		// Loop over all surface normals and compute the dot product
+		for (int i = 0; i < normalCount; i++)
+		{
+			Vector norms = pNormals[i].Vec(2);
+			float dot = fabsf(DotProduct(direction , norms));
+
+			// Raise the dot product to a power to flatten the curve
+			float adjustedDot = powf(dot, 0.5f);
+
+			// Compute the color for this sample based on the adjusted dot product
+			lightColor = bottomColor * ((gradientHeight - adjustedDot * gradientHeight) / gradientHeight) + topColor * (adjustedDot / gradientHeight);
+
+			// Accumulate the color value
+			colorAccumulator += lightColor;
+			sampleCount++;
+		}
+
+
+		// This loop does nothing with the color of the ambient light passed from the dlight. 
+		// Specificially this is only intensity in the direction of the ray.
+		// So that means the light color is done elsewhere.
 		for (int i = 0; i < normalCount; i++)
 		{
 			fltx4 addedAmount = MulSIMD(fractionVisible, dots[i]);
 			ambient_intensity[i] = AddSIMD(ambient_intensity[i], addedAmount);
 		}
-
 	}
 
+	// Compute the average color of the accumulated rays from our hemisphere sampling.
+	Vector averageColor = colorAccumulator / static_cast<float>(sampleCount);
+
+	// Set the intensity of the light based on the average color received.
+	dl->light.intensity = averageColor;
+
+	//DEBUG for checking the accumulated light.intensity value. Only run this with fast and an extremly simple map, because it can lag the compile window.
+	//char str[64];
+	//Q_snprintf(str, sizeof(str), "(%f, %f, %f)", dl->light.intensity[0], dl->light.intensity[1], dl->light.intensity[2]);
+	//qprintf("%s\n", str);
+
+	//I'm still not 100% sure what this does.
 	out.m_flFalloff = Four_Ones;
 	for (int i = 0; i < normalCount; i++)
 	{
 		// now scale out the missing parts of the hemisphere of this bump basis vector
 		fltx4 factor = ReciprocalSIMD(possibleHitCount[0]);
+
 		factor = MulSIMD(factor, possibleHitCount[i]);
+
 		out.m_flDot[i] = MulSIMD(factor, sumdot);
 		out.m_flDot[i] = ReciprocalSIMD(out.m_flDot[i]);
 		out.m_flDot[i] = MulSIMD(ambient_intensity[i], out.m_flDot[i]);
 	}
-
 	out.m_flSunAmount = Four_Zeros;
-
 }
 
 // Helper function - gathers light from area lights, spot lights, and point lights
