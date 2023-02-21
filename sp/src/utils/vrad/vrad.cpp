@@ -87,6 +87,12 @@ float g_SunAngularExtent=0.0;
 
 float g_flSkySampleScale = 1.0;
 
+//==========================================================================//
+// Ambient occlusion
+//==========================================================================//
+bool g_bNoSoften = false;
+bool g_bNoAO = false;
+
 bool g_bLargeDispSampleRadius = false;
 
 bool g_bOnlyStaticProps = false;
@@ -2356,9 +2362,18 @@ int ParseCommandLine( int argc, char **argv, bool *onlydetail )
 	int i;
 	for( i=1 ; i<argc ; i++ )
 	{
+		
 		if ( !Q_stricmp( argv[i], "-StaticPropLighting" ) )
 		{
 			g_bStaticPropLighting = true;
+		}
+		else if (!Q_stricmp(argv[i], "-NoAO"))
+		{
+			g_bNoAO = true;
+		}
+		else if (!Q_stricmp(argv[i], "-NoSoften"))
+		{
+			g_bNoSoften = true;
 		}
 		else if ( !stricmp( argv[i], "-StaticPropNormals" ) )
 		{

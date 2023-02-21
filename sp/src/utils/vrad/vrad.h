@@ -292,6 +292,9 @@ extern IIncremental *g_pIncremental;	// null if not doing incremental lighting
 
 extern float g_flSkySampleScale;								// extra sampling factor for indirect light
 
+extern bool g_bNoAO;
+extern bool g_bNoSoften;
+
 extern bool g_bLargeDispSampleRadius;
 extern bool g_bStaticPropPolys;
 extern bool g_bTextureShadows;
