@@ -354,9 +354,9 @@ void TestLine_DoesHitSky( FourVectors const& start, FourVectors const& stop,
 {
 	FourRays myrays;
 	myrays.origin = start;
-	myrays.direction = stop;
-	myrays.direction -= myrays.origin;
-	fltx4 len = myrays.direction.length();
+	myrays.direction = stop; //(56756,-56756)
+	myrays.direction -= myrays.origin; 
+	fltx4 len = myrays.direction.length(); // Returns the approximate length of the ray.
 	myrays.direction *= ReciprocalSIMD( len );
 	RayTracingResult rt_result;
 	CCoverageCountTexture coverageCallback;

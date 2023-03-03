@@ -23,6 +23,8 @@
 #include "bitmap/imageformat.h"
 #include "coordsize.h"
 #include <vstdlib\random.h>
+#include "src\SkyModel.h"
+#include "src\Geometry.h"
 
 enum
 {
@@ -1827,7 +1829,7 @@ void ExportDirectLightsToWorldLights()
 void GatherSampleSkyLightSSE(SSE_sampleLightOutput_t& out, directlight_t* dl, int facenum,
 	FourVectors const& pos, FourVectors* pNormals, int normalCount, int iThread,
 	int nLFlags, int static_prop_index_to_ignore,
-	float flEpsilon)
+	float flEpsilon)	
 {
 	bool bIgnoreNormals = (nLFlags & GATHERLFLAGS_IGNORE_NORMALS) != 0;
 	bool force_fast = (nLFlags & GATHERLFLAGS_FORCE_FAST) != 0;
@@ -1906,17 +1908,6 @@ void GatherSampleSkyLightSSE(SSE_sampleLightOutput_t& out, directlight_t* dl, in
 	out.m_flSunAmount = MulSIMD(out.m_flDot[0], out.m_flFalloff);
 }
 
-
-char* Fltx4ToString(fltx4 v) {
-	char* str = new char[64];
-	sprintf(str, "(%f, %f, %f, %f)", SubFloat(v, 0), SubFloat(v, 1), SubFloat(v, 2), SubFloat(v, 3));
-	return str;
-	//Convert a fltx4 to a string and print it in the compiler.
-//char* str = Fltx4ToString(v);
-//printf("%s\n", str);
-//delete[] str;
-//return 0;
-}
 
 void CalculatePerpendicularVector(const Vector& normal, Vector& v1, Vector& v2)
 {
@@ -2004,78 +1995,180 @@ void CalculatePerpendicularVector(const Vector& normal, Vector& v1, Vector& v2)
 //		outSamples[i] = lightColor;
 //	}
 //}
+
+//------------------------------------------------------------------------------------------------------------------------------------------------------------------
+// Why weren't these here already? Maybe they were but I couldn't find them.
+//------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+char* Fltx4ToString(fltx4 v) {
+	char* str = new char[64];
+	sprintf(str, "(%f, %f, %f, %f)", SubFloat(v, 0), SubFloat(v, 1), SubFloat(v, 2), SubFloat(v, 3));
+	return str;
+	//Convert a fltx4 to a string and print it in the compiler.
+	//char* str = Fltx4ToString(v);
+	//printf("%s\n", str);
+	//delete[] str;
+	//return 0;
+}
+
 float Dot(Vector v1, Vector v2) {
 	return v1.x * v2.x + v1.y * v2.y + v1.z * v2.z;
 }
 
-Vector GetHemisphereSamples(float surfacedot, Vector facenorm, Vector gradientOneColor, Vector gradientTwoColor, Vector refdir) {
-	// Soften the cosine term
-	//surfacedot = SoftenCosineTerm(surfacedot);
+float smoothstep(float edge0, float edge1, float x) {
+	// Scale, bias and saturate x to 0..1 range
+	x = clamp((x - edge0) / (edge1 - edge0), 0.0f, 1.0f);
+	// Evaluate polynomial
+	return x * x * (3 - 2 * x);
+}
+void VectorToEulerAngles(const Vector& vec, float& pitch, float& yaw, float& roll) {
+	// Calculate yaw (y-axis rotation)
+	yaw = atan2(vec.y, vec.x) * 180 / M_PI;
+	if (yaw < 0) {
+		yaw += 360;
+	}
 
-	//Vector color;
-	//
-	//// Calculate color value as before
-	//float oneminusdot = 1 - surfacedot;
-	//Vector val = surfacedot * gradientOneColor - (gradientTwoColor * Vector(1, 1, 1));
-	//color = gradientOneColor + val;
-	//val = oneminusdot * Vector(gradientHeight, gradientHeight, gradientHeight) - (gradientTwoColor * Vector(1, 1, 1));
-	//color += val;
-	//
-	//// Ensure color value is non-negative
-	////color = Vector(fmax(color.x, 0.0f), fmax(color.y, 0.0f), fmax(color.z, 0.0f));
-	//
-	//return color;
+	// Calculate pitch (x-axis rotation)
+	float xyDist = sqrt(vec.x * vec.x + vec.y * vec.y);
+	pitch = atan2(-vec.z, xyDist) * 180 / M_PI;
+	if (pitch < 0) {
+		pitch += 360;
+	}
 
-	// Calculate the interpolation factor based on the dot product
-	//float interp = (surfacedot + 1.0f) / 2.0f;
-	//interp = fmax(fmin(interp, 1.0f), 0.0f);
-	//
-	//Vector BottomColor(0, 0, 0);
-	//// Interpolate between the colors using the interpolation factor
-	//Vector color(3);
-	//for (int i = 0; i < 3; i++)
-	//{
-	//	color[i] = interp * BottomColor[i] + (1.0f - interp) * gradientOneColor[i];
-	//	color[i] = interp * gradientTwoColor[i] + (1.0f - interp) * color[i];
-	//}
-	//
-	//return color;
-//}
+	// Calculate roll (z-axis rotation)
+	roll = 0;
+}
 
-	//if (facenorm.x > 0.0f)
-	//if (facenorm.y > 0.0f) 
-	//if (facenorm.z > 0.0f)
+Vector EulerToVector(const Vector& angles)
+{
+	// Convert angles from degrees to radians
+	const float pitch = DEG2RAD(angles.x);
+	const float yaw = DEG2RAD(angles.y);
+	const float roll = DEG2RAD(angles.z);
 
-	//float weight = (surfacedot + 1.0) / 2.0;
-	//
-	//// Interpolate the color based on the weight
-	//Vector color = {
-	//	vec_t(1.0 - weight) * gradientOneColor[0] + weight * gradientTwoColor[0],
-	//	vec_t(1.0 - weight) * gradientOneColor[1] + weight * gradientTwoColor[1],
-	//	vec_t(1.0 - weight) * gradientOneColor[2] + weight * gradientTwoColor[2]
-	//};
-	//
-	//return color;
+	// Calculate sin and cos values for each angle
+	const float sp = sin(pitch);
+	const float cp = cos(pitch);
+	const float sy = sin(yaw);
+	const float cy = cos(yaw);
+	const float sr = sin(roll);
+	const float cr = cos(roll);
 
-	Vector color(0, 0, 0);
+	// Create a unit vector from the angles
+	Vector forward(
+		cp * cy,
+		cp * sy,
+		-sp
+	);
+	Vector right(
+		-1.0f * sr * sp * cy + -1.0f * cr * -sy,
+		-1.0f * sr * sp * sy + -1.0f * cr * cy,
+		-1.0f * sr * cp
+	);
+	Vector up(
+		cr * sp * cy + -sr * -sy,
+		cr * sp * sy + -sr * cy,
+		cr * cp
+	);
+
+	return forward + right + up;
+}
+
+// Returns a random float in the range [0,1)
+float rand_float() {
+	return static_cast<float>(rand()) / RAND_MAX;
+}
+
+// Generates a random point on a unit hemisphere with a cosine-weighted distribution
+Vector cosine_weighted_sample()
+{
+	float r1 = 2.0 * M_PI * rand_float();
+	float r2 = rand_float();
+	float r2s = sqrt(r2);
+
+	Vector w = Vector(cos(r1) * r2s, sin(r1) * r2s, sqrt(1.0f - r2));
+	float sign = (rand_float() < 0.5f) ? -1.0f : 1.0f;
+
+	Vector u = Vector(sign * w.y, -sign * w.x, 0.0f);
+	u = u.Normalized();
+
+	Vector v = CrossProduct(w, u);
+	return u * rand_float() + v * rand_float() + w * sqrt(1.0f - rand_float() * rand_float());
+}
+
+//------------------------------------------------------------------------------------------------------------------------------------------------------------------
+// Implementing ahPhysicalSky and adapt it for vrad.
+// https://github.com/anandhotwani/ahPhysicalSky
+//------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Vector3f ConvertVectorToVector3f(const Vector& v)
+{
+	return Vector3f(v.x, v.y, v.z);
+}
+
+SkyModel SetupHosekSky(Vector vSunDir, float fSunSize, Vector vSunColor, Vector vGroundAlbedo, float fTurbidity, Vector vSunTint, bool bEnableSun)
+{
+	SkyModel sky;
+	Vector3f sunDir = ConvertVectorToVector3f(vSunDir);
+	float sunSize = fSunSize;
+	Vector3f sunColor = ConvertVectorToVector3f(vSunColor);
+	Vector3f groundAlbedo = ConvertVectorToVector3f(vGroundAlbedo);
+	float turbidity = fTurbidity;
+	Vector3f sunTint = ConvertVectorToVector3f(vSunTint);
+
+	//I'll experiment with this later.
+	//I believe we only want sRGB.
+	ColorSpace colorspace = sRGB;  
+
+	//Now create the sky model with the given values.
+	sky.SetupSky(sunDir,
+		sunSize,
+		sunColor,
+		groundAlbedo,
+		turbidity,
+		colorspace
+	);
+	return sky;
+}
+
+Vector SampleHosekSky(SkyModel sky, Vector vSampleDir, Vector vSkyTint, Vector vSunTint, bool bEnableSun)
+{
+
+	//Let's setup some variables to pass to the struct. anandhotwani's imlemention uses his own Vector3f type, We're gonna just convert Valve's Vector to his.
+	Vector3f skyTint = ConvertVectorToVector3f(vSkyTint);
+	Vector3f sunTint = ConvertVectorToVector3f(vSunTint);
+
+	//
+	Vector3f sampleDir = ConvertVectorToVector3f(vSampleDir);
+
+	//This returns a Vector3f. We'll need to conver it.
+	Vector3f output = sky.Sample(sampleDir, bEnableSun, skyTint, sunTint);
+	output;
 	
-	
-	float dotProduct = Dot(facenorm, refdir); // Calculate dot product between face normal and reference direction
+	return Vector(max(0, output.x), max(0, output.y), max(0, output.z));
+}
+//------------------------------------------------------------------------------------------------------------------------------------------------------------------
+// Hemisphere sampling technique for basic implementation of colors.
+//------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Vector GetHemisphereSamples(float surfacedot, Vector facenorm, Vector gradientOneColor, Vector gradientTwoColor, Vector refdir, Vector groundColor)
+{
+	Vector color = groundColor;
+
+	//Dot between the facenormal and world up. If its negative we exit because the face is looking below the horizon.
+	//Essentially we're setting a ground color with this for faces pointing down.
+	if (Dot(facenorm, Vector(0, 0, 1)) <= 0.0f) 
+	return color;
+		
+	float dotProduct = Dot(facenorm, refdir);
 	float weight = (dotProduct + 1.0) / 2.0; // Calculate weight based on dot product
 
-	//if (dotProduct != 0) 
-	//{
-		// Interpolate the color based on the weight
-		color = {
-			clamp(vec_t(1.0 - weight) * gradientOneColor[0] + weight * gradientTwoColor[0],0,255),
-			clamp(vec_t(1.0 - weight) * gradientOneColor[1] + weight * gradientTwoColor[1],0,255),
-			clamp(vec_t(1.0 - weight) * gradientOneColor[2] + weight * gradientTwoColor[2],0,255)
-		};
-	//}
-
-		
+	color = {
+		vec_t(1.0 - weight) * gradientTwoColor[0] + weight * gradientOneColor[0],
+		vec_t(1.0 - weight) * gradientTwoColor[1] + weight * gradientOneColor[1],
+		vec_t(1.0 - weight) * gradientTwoColor[2] + weight * gradientOneColor[2]
+	};
 	return color;
 }
+//------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 //TODO: Modify?
 // Helper function - gathers light from ambient sky light
@@ -2084,13 +2177,29 @@ void GatherSampleAmbientSkySSE(SSE_sampleLightOutput_t& out, directlight_t* dl, 
 	int nLFlags, int static_prop_index_to_ignore,
 	float flEpsilon)
 {
+
+	//for (int p = 0; p < 4;p++) {
+	//	qprintf("\n position = %f,%f", pos.Vec(p).x, pos.Vec(p).y);
+	//}
 	unsigned        d;
 	char* name;
-	Vector gradientOneColor;
-	Vector gradientTwoColor;
-	Vector gradientBiasAngle (0,0,0);
-	int gradientOneIntensity = 1;
-	int gradientTwoIntensity = 1;
+
+	Vector horizonColor;
+	float _intensity = 255;
+	Vector vSunDir;
+	float fTurbidity = 2.0f;
+
+	bool perfectSamples = false;
+	bool bEnableSun = true; //Overexposured
+	float fSunSize = 0.25;
+	Vector vSkyTint(1);
+	Vector vSunTint(1);
+
+	Vector vGroundAlbedo(0.18f);
+	//Vector vSunColor(20000.0f);
+	Vector vSunColor(20.0f);
+	float elevation(0);
+	float azimuth(0);
 
 	entity_t* e = NULL;
 	for (d = 0; d < num_entities; d++) {
@@ -2099,29 +2208,54 @@ void GatherSampleAmbientSkySSE(SSE_sampleLightOutput_t& out, directlight_t* dl, 
 		if (!strncmp(name, "hemisphere_light",1))
 		{
 			// Get the value of the "_ambient" key
-			GetVectorForKey(e, "_topambient", gradientOneColor);
-			GetVectorForKey(e, "_bottomambient", gradientTwoColor);
-			GetVectorForKey(e, "_gradientheight", gradientBiasAngle);
-			gradientOneIntensity = IntForKey(e, "_topintensity");
-			gradientTwoIntensity = IntForKey(e, "_bottomintensity");
+			fSunSize = FloatForKeyWithDefault(e, "_sunsize", 0.25);
+			elevation = FloatForKey(e, "_elevation");
+			azimuth = FloatForKey(e, "_azimuth");
+			fTurbidity = FloatForKey(e, "_turbidity");
+			_intensity = FloatForKey(e, "_intensity");
+			GetVectorForKey(e, "_suncolor", vSunColor);
+			GetVectorForKey(e, "_skytint", vSkyTint);
+			GetVectorForKey(e, "_groundalbedo", vGroundAlbedo);
 		}
 	}
 
-	// NEW NEW NEW	
-	Vector lightColor;
+	elevation *= (M_PI / 180.0);   // Convert elevation angle from degrees to radians
+	azimuth *=(M_PI / 180.0);    // Convert azimuth angle from degrees to radians
+
+	float x = sin(elevation) * cos(azimuth);
+	float y = sin(elevation) * sin(azimuth);
+	float z = cos(elevation);
+
+	Vector _sundir(x, y, z);
+	_sundir.NormalizeInPlace();
+
+	//Surely there is a better way to do this...
+	vSkyTint = Vector(clamp(vSkyTint.x, 1, 255), clamp(vSkyTint.y, 1, 255), clamp(vSkyTint.z, 1, 255));
+	vGroundAlbedo = Vector(clamp(vGroundAlbedo.x, 1, 255), clamp(vGroundAlbedo.y, 1, 255), clamp(vGroundAlbedo.z, 1, 255));
+	
+	VectorScale(vSunColor, 100, vSunColor);
+	VectorDivide(vSkyTint, 255, vSkyTint);
+	VectorDivide(vGroundAlbedo, 255, vGroundAlbedo);
+
 	Vector colorAccumulator(0, 0, 0);
-	//Vector colorAccumulatorSky(0, 0, 0);
-	//int hemsamples = 1;
 
-	gradientOneColor = gradientOneColor * gradientOneIntensity;
-	gradientTwoColor = gradientTwoColor * gradientTwoIntensity;
+	//Hard Limits Here:
+	if (fTurbidity > 10)
+		fTurbidity = 10;
 
+	//NEWER NEWER NEWER
+	Vector SurfaceNorm = pNormals[0].Vec(0);
 
-	//if (gradientBiasAngle <= 0.0f)
-	//{
-	//	gradientBiasAngle = 0.001f; //We can't divide by 0 so stop it.
-	//}
-	//
+	//TODO: Below Horizon lighting?
+	//We don't want to divide by zero by accident.
+	if (_sundir.z == 0)
+		_sundir.z = +0.001;
+
+	//vSunDir = (_sundir);
+	SkyModel sky = SetupHosekSky(_sundir, fSunSize, vSunColor, vGroundAlbedo, fTurbidity, vSunTint, bEnableSun);
+	
+	// NEW NEW NEW Gradient Lighting.
+	Vector lightColor;
 
 	bool bIgnoreNormals = (nLFlags & GATHERLFLAGS_IGNORE_NORMALS) != 0;
 	bool force_fast = (nLFlags & GATHERLFLAGS_FORCE_FAST) != 0;
@@ -2176,20 +2310,21 @@ void GatherSampleAmbientSkySSE(SSE_sampleLightOutput_t& out, directlight_t* dl, 
 	else
 		nsky_samples *= g_flSkySampleScale;
 
+	//qprintf("\nsky samples = %i", nsky_samples);
+
 	//For every sky sample perform this loop.
 	for (int j = 0; j < nsky_samples; j++)
 	{
 		//To start, we check for sky visibility for all brush face surfaces.
 		FourVectors anorm;
-		anorm.DuplicateVector(sampler.NextValue());
-
+		//anorm.DuplicateVector(sampler.NextValue()); //We sample the same points every loop as Halton is deterministic. Seed 1 is always the same...
+		anorm.DuplicateVector(cosine_weighted_sample()); //Cosine weighted samples.
 		if (bIgnoreNormals)
 			dots[0] = ReplicateX4(CONSTANT_DOT);
 		else
 			
 		//this is the dot product of the Random point samples for each normal direction. * represents dotproduct in this instance.
 		dots[0] = NegSIMD(pNormals[0] * anorm);
-
 		dots[0] = SoftenCosineTerm(dots[0]);
 
 		//Is the Dot angle greater than 0.001? Fill validity for each direction.
@@ -2197,7 +2332,7 @@ void GatherSampleAmbientSkySSE(SSE_sampleLightOutput_t& out, directlight_t* dl, 
 		fltx4 validity = CmpGtSIMD(dots[0], ReplicateX4(EQUAL_EPSILON));
 
 		// No possibility of anybody getting lit
-		// Is the dot product of surface normal and the random point negative? Throw it out.
+		// The dot product of surface normal and the random point negative? Throw it out.
 		// Essentially are we sampling beneath the surface?
 		if (!TestSignSIMD(validity))
 			continue;
@@ -2215,9 +2350,7 @@ void GatherSampleAmbientSkySSE(SSE_sampleLightOutput_t& out, directlight_t* dl, 
 				dots[i] = ReplicateX4(CONSTANT_DOT);
 			else
 				dots[i] = NegSIMD(pNormals[i] * anorm);
-
 			dots[i] = SoftenCosineTerm(dots[i]);
-
 			fltx4 validity2 = CmpGtSIMD(dots[i], ReplicateX4(EQUAL_EPSILON));
 			dots[i] = AndSIMD(validity2, dots[i]);
 
@@ -2226,214 +2359,50 @@ void GatherSampleAmbientSkySSE(SSE_sampleLightOutput_t& out, directlight_t* dl, 
 		}
 
 		// search back to see if we can hit a sky brush
-		FourVectors delta = anorm;
-		delta *= -MAX_TRACE_LENGTH; //Scale each vector
-		delta += pos; //offset 
+		FourVectors rayEnding = anorm; //-1 to 1 direction vector
+		rayEnding *= -MAX_TRACE_LENGTH; //Scale each vector. Multply by the negative bounds limits. (-1,1)* -(56,756)
+		rayEnding += pos; //Add the point position of the face sample in world space. e.g.(64,64,8)
 		FourVectors surfacePos = pos;
 		FourVectors offset = anorm;
-		offset *= -flEpsilon;
-		surfacePos -= offset;
+		offset *= -flEpsilon; //0
+		surfacePos -= offset; //surface position... Why is this used since the offset is 0 anyways?
 
 		fltx4 fractionVisible = Four_Ones;
-
 		//We're shooting out 4 rays, and seeing if it hits the sky for each normal direction. 
-		//First normal being the surfacenormal at 0, then 1,2,3 for the xyz for the bumpmaps.
-		TestLine_DoesHitSky(surfacePos, delta, &fractionVisible, true, static_prop_index_to_ignore);
+		TestLine_DoesHitSky(surfacePos, rayEnding, &fractionVisible, true, static_prop_index_to_ignore);
 
-						
-		////Breakdown fractionVisible.
-		//float skyvisN = SubFloat(fractionVisible, 0);
-		float skyvisX = SubFloat(fractionVisible, 1);
-		float skyvisY = SubFloat(fractionVisible, 2);
-		float skyvisZ = SubFloat(fractionVisible, 3);
-		Vector skyVisible (skyvisX, skyvisY, skyvisZ);
+		Vector hemcolor(0);
 
-		//qprintf("\n gradient One Color Output  = %f,%f,%f", skyvisN, skyvisX, skyvisZ);
 
-		/*
-		Vector biasNorm[4];
-		for (int k = 0; k < normalCount; k++) 
-		{
-			fltx4 normx = pNormals[k].x;
-			fltx4 normy = pNormals[k].y;
-			fltx4 normz = pNormals[k].z;
-		
-			fltx4 skyvisy = MulSIMD(normy, fractionVisible);
-			fltx4 skyvisz = MulSIMD(NegSIMD(normz), fractionVisible); // Not sure why Up is negative.
-		
-			//We now have the directions that we can sample for each normal.
-			for (int i = 0; i < 4; i++) {
-				biasNorm[i] = Vector(SubFloat(normx, i), SubFloat(normy, i), SubFloat(normz, i));
+		//Debug
+		if (SurfaceNorm.z > 0 && perfectSamples) {
+			Vector hemcolor = SampleHosekSky(sky, pNormals[0].Vec(0), vSkyTint, vSunTint, bEnableSun);
+			colorAccumulator += (hemcolor * _intensity);
+		}
+			
+		for (int s = 0; s < 4; s++) {
+			Vector sampleAngle = Vector(rayEnding.Vec(s) - surfacePos.Vec(s)).Normalized();
+			if (!perfectSamples && SubFloat(fractionVisible, s) != 0) {
+				Vector hemcolor = SampleHosekSky(sky, sampleAngle, vSkyTint, vSunTint, bEnableSun);
+				colorAccumulator += (hemcolor * _intensity);
 			}
-		
 		}
-		
-		int dirsamples = 0;
-		for (int i = 1; i < 4; i++) {
-			// Use the bias direction for this surface normal instead of the random direction
-			Vector direction = biasNorm[i];
-			Vector normal = pNormals[0].Vec(0);
-		
-			//if (bIgnoreNormals)
-			//	Vector direction = Vector(0, 0, 0);
-			//else
-			//	Vector direction = biasNorm[i];
-		
-			// Generate a random direction on the hemisphere with a probability proportional to the cosine of the angle between the normal and the direction
-			float r1 = RandomFloat(0.0f, 1.0f);
-			float r2 = RandomFloat(0.0f, 1.0f);
-			float sinTheta = sqrtf(1.0f - r1 * r1);
-			float phi = 2.0f * M_PI * r2;
-			float cosTheta = r1;
-		
-			// Rotate the direction by the generated angles
-			Vector v1, v2;
-			CalculatePerpendicularVector(normal, v1, v2);
-			Vector rotatedDir = v1 * sinTheta * cosf(phi) + v2 * sinTheta * sinf(phi) + normal * cosTheta;
-		
-			// Compute the dot product with the surface normal
-			float dot = fabsf(DotProduct(direction, normal));
-		
-			// Compute the color for this sample based on the dot product
-			lightColor = bottomColor * ((gradientHeight - dot * gradientHeight) / gradientHeight) + topColor * (dot / gradientHeight);
-		
-			//lightColor * SubFloat(fractionVisible, i);
-			// 
-			// Accumulate the color value
-			// Dim the color sample if it doesn't see the sky.
-			colorAccumulator += lightColor;
-			dirsamples++;
-		}
-		 Compute the average color of the accumulated rays from our hemisphere sampling.
-		averageColor = colorAccumulator / static_cast<float>(dirsamples);
-		sampleCount++;
-		surfaceNormal = pNormals[0].Vec(0);
 
-		
-
-		for (int i = 0; i < numSamples; i++)
-		{
-		
-			Vector direction = samples[i];
-			Vector normal = pNormals[0].Vec(0);
-		
-			FourVectors flooddir;
-		
-			flooddir.DuplicateVector(direction);
-		
-			FourVectors delta = flooddir;
-			delta *= -MAX_TRACE_LENGTH;
-			delta += pos;
-		
-			fltx4 fractionVisible = Four_Ones;
-			TestLine_DoesHitSky(surfacePos, delta, &fractionVisible, true, static_prop_index_to_ignore);
-		
-			if (TestSignSIMD(CmpGeSIMD(fractionVisible, Four_Ones)) != 0xF)
-			{
-				// sky is visible, calculate color for this direction
-				float dot = fabsf(DotProduct(direction, normal));
-				Vector lightColor = bottomColor * ((gradientHeight - dot * gradientHeight) / gradientHeight) + topColor * (dot / gradientHeight);
-				//lightColor *= SubFloat(fractionVisible, 1);
-		
-				// accumulate color
-				colorAccumulator += lightColor;
-				dirSamples++;
-			}
-			sampleCount++;
-		}
-		*/
-
-		//Vector* samples = new Vector[hemsamples];
-
-		FourVectors endPosition = delta;
-		FourVectors surfaceNorm = pNormals[0]; //Surface Normal
-		fltx4 surfacedot = dots[0]; //Dot product of the surface and the random hemisphere sample.
-
-		float surfacedotproduct = SubFloat(dots[0], 0);
-		
-		Vector SkySampleAngle = anorm.Vec(0);
-
-		Vector surfaceNorms = pNormals[0].Vec(0);
-
-		Vector hemcolor = GetHemisphereSamples(surfacedotproduct, surfaceNorms, gradientOneColor, gradientTwoColor, gradientBiasAngle);
-
-		//hemcolor *= -1;
-
-		//char* str = Fltx4ToString(hemcolor);
-		//qprintf("\n Surfacedot = %f", surfacedotproduct);
-		//delete[] str;
-		//
-		//qprintf("\n Gradient Height Output  = %f", gradientHeight);
-		//qprintf("\n gradient One Color Output  = %f,%f,%f", gradientOneColor.x, gradientOneColor.y, gradientOneColor.z);
-		//qprintf("\n gradient Two Color Output  = %f,%f,%f", gradientTwoColor.x, gradientTwoColor.y, gradientTwoColor.z);
-		//qprintf("\n Color Hemisphere Output  = %f,%f,%f", hemcolor.x, hemcolor.y, hemcolor.z);
-		fltx4 fractionVisible2 = Four_Ones;
-		TestLine_IgnoreSky(surfacePos, delta, &fractionVisible2, static_prop_index_to_ignore); //We've already hit the sky, throw out non-good samples.
-		colorAccumulator += hemcolor * skyVisible; //Decrease the intensity of rays that hit a surface...?
-		//for (int h = 0; h < hemsamples; h++) {
-		//	Vector Color = samples[h];
-		//	
-		//	for (int intsamples = 0; intsamples < hemsamples; intsamples++) {
-		//		fltx4 fractionVisible2 = Four_Ones;
-		//		TestLine_IgnoreSky(surfacePos, delta, &fractionVisible2, static_prop_index_to_ignore); //We've already hit the sky, throw out non-good samples.
-		//		colorAccumulator += hemcolor// * SubFloat(fractionVisible2, 1);
-		//		dirSamples++;
-		//	}
-		//}
-		//delete[] samples;
-
-			// This loop does nothing with the color of the ambient light passed from the dlight. 
-		// Specificially this is only intensity in the direction of the ray.
-		// So that means the light color is done elsewhere.
 		for (int i = 0; i < normalCount; i++)
 		{
 			fltx4 addedAmount = MulSIMD(fractionVisible, dots[i]);
 			ambient_intensity[i] = AddSIMD(ambient_intensity[i], addedAmount);
 		}
-	} //Exit the sampling loop.
-	dl->light.intensity = colorAccumulator/ nsky_samples;// / dirSamples;
+	}
+
+	sky.Shutdown();
+	//Exit the sampling loop.
+	dl->light.intensity = colorAccumulator / nsky_samples;
 	
-
-
-	//Vector averageColor = colorAccumulator / static_cast<float>(dirSamples);
-	//dl->light.intensity = averageColor;
-
-	//averageColor = colorAccumulatorSky / nsky_samples; // / static_cast<float>(dirSamples);
-	//qprintf("\n colorAccumulatorSky - R  output  = %f", averageColor.x);
-	//qprintf("\n colorAccumulatorSky - G  output  = %f", averageColor.y);
-	//qprintf("\n colorAccumulatorSky - B  output  = %f", averageColor.z);
-
-	// Set the intensity of the light based on the average color received.
-
-	///New Directional Light Sampling for Hemispheres.
-	//Vector* samples = new Vector[nsky_samples];
-	//GetHemisphereSamples(pNormals[0].Vec(0), gradientHeight, topColor, bottomColor, nsky_samples, samples);
-	//
-	//for (int i = 0; i < nsky_samples; i++) {
-	//int dirSamples = 0;
-	//	Vector direction = samples[i];
-	//	float dot = fabsf(DotProduct(direction, pNormals[0].Vec(0)));
-	//	Vector lightColor = bottomColor * ((gradientHeight - dot * gradientHeight) / gradientHeight) + topColor * (dot / gradientHeight);
-	//	fltx4 fractionVisible2 = Four_Ones;
-	//	FourVectors pos, delta;
-	//	pos.DuplicateVector(pNormals[0].Vec(0));
-	//	delta.DuplicateVector(direction);
-	//	delta *= 1000.0f;
-	//	delta += pos;
-	//	TestLine_DoesHitSky(pos, delta, &fractionVisible2, true, -1);
-	//	colorAccumulator += lightColor * SubFloat(fractionVisible2, 1);
-	//	dirSamples++;
-
-		//char* dotstring = Fltx4ToString(fractionVisible);
-		//qprintf("\n fractionVisible output  = %f", dot);
-		//delete[] dotstring;
-	//}
-
-
-
 	//I'm still not 100% sure what this does.
 	out.m_flFalloff = Four_Ones;
-	for (int i = 0; i < normalCount; i++)
+	out.m_flSunAmount = Four_Zeros;
+	for (int i = 1; i < normalCount; i++)
 	{
 		// now scale out the missing parts of the hemisphere of this bump basis vector
 		fltx4 factor = ReciprocalSIMD(possibleHitCount[0]);
@@ -2444,7 +2413,8 @@ void GatherSampleAmbientSkySSE(SSE_sampleLightOutput_t& out, directlight_t* dl, 
 		out.m_flDot[i] = ReciprocalSIMD(out.m_flDot[i]);
 		out.m_flDot[i] = MulSIMD(ambient_intensity[i], out.m_flDot[i]);
 	}
-	out.m_flSunAmount = Four_Zeros;
+	out.m_flDot[0] = Four_Ones;
+	
 }
 
 // Helper function - gathers light from area lights, spot lights, and point lights

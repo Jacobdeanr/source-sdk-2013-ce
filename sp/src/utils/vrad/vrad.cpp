@@ -91,7 +91,7 @@ float g_flSkySampleScale = 1.0;
 // Ambient occlusion
 //==========================================================================//
 bool g_bNoSoften = false;
-bool g_bNoAO = false;
+bool g_bNoAO = true;
 
 bool g_bLargeDispSampleRadius = false;
 
@@ -129,6 +129,7 @@ bool        g_bDisablePropSelfShadowing = false;
 CUtlVector<byte> g_FacesVisibleToLights;
 
 RayTracingEnvironment g_RtEnv;
+RayTracingEnvironment g_embreeEnv;
 
 dface_t *g_pFaces=0;
 
@@ -2367,9 +2368,9 @@ int ParseCommandLine( int argc, char **argv, bool *onlydetail )
 		{
 			g_bStaticPropLighting = true;
 		}
-		else if (!Q_stricmp(argv[i], "-NoAO"))
+		else if (!Q_stricmp(argv[i], "-noAO"))
 		{
-			g_bNoAO = true;
+			//g_bNoAO = true; //Disable because of the new lighting model
 		}
 		else if (!Q_stricmp(argv[i], "-NoSoften"))
 		{
